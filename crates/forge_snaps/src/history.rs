@@ -9,8 +9,11 @@ use serde::{Deserialize, Serialize};
 /// A prompt boundary whose conversation and file checkpoint share one turn ID.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HistoryPoint {
+    /// Identifier shared by the file checkpoint and conversation boundary.
     pub turn: String,
+    /// Prompt text displayed in the rewind selector.
     pub label: String,
+    /// Capture time formatted as an RFC 3339 timestamp.
     pub timestamp: String,
     conversation: Conversation,
 }
@@ -65,6 +68,11 @@ pub struct ConversationHistory {
 }
 impl ConversationHistory {
     /// Construct a history in the existing host snapshot directory.
+    ///
+    /// # Arguments
+    /// * `base` - Snapshot storage directory outside the workspace.
+    /// * `cwd` - Workspace directory whose files are captured.
+    /// * `session` - Host conversation UUID used to identify its history.
     pub fn new(base: PathBuf, cwd: PathBuf, session: String) -> Self {
         Self { base, cwd, session }
     }
@@ -122,6 +130,12 @@ impl ConversationHistory {
         Ok(filesnap::WorkspaceStore::open(&self.base, &self.cwd)?)
     }
     /// Refuse concurrent model turns or restores in the same workspace.
+    /// Keep the returned lease alive until the turn or restore finishes.
+    ///
+    /// # Errors
+    /// Returns an error if the workspace cannot be resolved, storage cannot
+    /// be accessed, another operation holds the lock, or a stale active
+    /// marker cannot be removed.
     pub fn acquire(&self) -> Result<HistoryLease> {
         let dir = self.dir()?;
         let lock = fs::OpenOptions::new()
@@ -142,6 +156,16 @@ impl ConversationHistory {
         Ok(HistoryLease { _lock: lock, active })
     }
     /// Capture before a prompt and publish the edit-hook association.
+    /// The caller must hold the workspace lease returned by `acquire`.
+    ///
+    /// # Arguments
+    /// * `conversation` - Host conversation before dispatching the prompt.
+    /// * `label` - Prompt text displayed in the rewind selector.
+    ///
+    /// # Errors
+    /// Returns an error if recovery is pending, history or storage is invalid
+    /// or inaccessible, capture fails or skips paths, or the history state
+    /// and active marker cannot be persisted.
     pub fn begin(&self, conversation: Conversation, label: String) -> Result<()> {
         let mut state = self.state()?;
         ensure!(
@@ -174,6 +198,17 @@ impl ConversationHistory {
         )
     }
     /// Attach local tool pre-images, including files that do not yet exist.
+    /// Returns without capturing when no active turn marker exists.
+    ///
+    /// # Arguments
+    /// * `base` - Snapshot storage directory used by the active history.
+    /// * `cwd` - Workspace directory associated with the active turn.
+    /// * `path` - Local file path resolved by the tool before mutation.
+    ///
+    /// # Errors
+    /// Returns an error if history storage or the active marker cannot be
+    /// read, the marker is invalid, file contents cannot be read, or the
+    /// pre-image cannot be recorded in the snapshot store.
     pub fn declare(base: &Path, cwd: &Path, path: &Path) -> Result<()> {
         let active = match fs::read(Self::directory(base, cwd)?.join("active.json")) {
             Ok(bytes) => serde_json::from_slice::<Active>(&bytes)?,
@@ -198,6 +233,10 @@ impl ConversationHistory {
         Ok(())
     }
     /// List current-branch prompts, newest first.
+    ///
+    /// # Errors
+    /// Returns an error if the workspace or conversation ID is invalid, or
+    /// the history state cannot be read or decoded.
     pub fn points(&self) -> Result<Vec<HistoryPoint>> {
         Ok(self.state()?.points.into_iter().rev().collect())
     }
@@ -233,6 +272,17 @@ impl ConversationHistory {
     /// Restore files first, keeping a durable journal until the host commits
     /// the conversation. Returns the destination conversation and an opaque
     /// state token for `commit`.
+    /// The caller must hold the workspace lease returned by `acquire`.
+    ///
+    /// # Arguments
+    /// * `target` - Current-branch turn ID to rewind to, or `None` to redo.
+    /// * `current` - Host conversation saved with the recovery checkpoint.
+    ///
+    /// # Errors
+    /// Returns an error if history or ignore policy cannot be loaded,
+    /// recovery is pending, the target or redo entry is unavailable, a
+    /// recovery checkpoint or journal cannot be saved, or file restoration
+    /// fails. A failed rollback retains the journal for `recover`.
     pub fn restore(
         &self,
         target: Option<&str>,
@@ -255,14 +305,23 @@ impl ConversationHistory {
                 .iter()
                 .position(|p| p.turn == turn)
                 .context("Checkpoint is not on the current branch")?;
+            let (retained, rewound) = state
+                .points
+                .split_at_checked(index)
+                .context("Invalid checkpoint position")?;
+            let destination = rewound
+                .first()
+                .context("Checkpoint is not on the current branch")?
+                .conversation
+                .clone();
             (
-                state.points[index..]
+                rewound
                     .iter()
                     .rev()
                     .map(|p| p.turn.clone())
                     .collect::<Vec<_>>(),
-                state.points[index].conversation.clone(),
-                state.points[..index].to_vec(),
+                destination,
+                retained.to_vec(),
             )
         } else {
             let redo = state
@@ -317,11 +376,25 @@ impl ConversationHistory {
         Ok((destination, serde_json::to_string(&state)?))
     }
     /// Finish after the conversation has been persisted successfully.
+    /// The caller must keep the workspace lease until this operation ends.
+    ///
+    /// # Arguments
+    /// * `token` - Unmodified state token returned by `restore` or `recover`.
+    ///
+    /// # Errors
+    /// Returns an error if the token is invalid or the history state cannot
+    /// be persisted.
     pub fn commit(&self, token: &str) -> Result<()> {
         self.save(&serde_json::from_str::<State>(token)?)
     }
     /// Restore the journal's files; the host must persist the returned
     /// conversation and commit.
+    /// The caller must hold the workspace lease returned by `acquire`.
+    ///
+    /// # Errors
+    /// Returns an error if history cannot be loaded, no recovery is pending,
+    /// the saved ignore policy is invalid, or file restoration or state
+    /// serialization fails. The persisted journal remains until `commit`.
     pub fn recover(&self) -> Result<(Conversation, String)> {
         let mut state = self.state()?;
         let recovery = state

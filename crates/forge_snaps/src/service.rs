@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use forge_domain::Snapshot;
 use forge_fs::ForgeFS;
 
-/// Implementation of the SnapshotService
+/// Per-file snapshots backed by filesnap with legacy raw snapshot support.
 #[derive(Debug)]
 pub struct SnapshotService {
     /// Base directory for storing snapshots
@@ -13,7 +13,11 @@ pub struct SnapshotService {
 }
 
 impl SnapshotService {
-    /// Create a new FileSystemSnapshotService with a specific home path
+    /// Create a per-file snapshot service using the host storage directory.
+    ///
+    /// # Arguments
+    /// * `snapshot_base_dir` - Directory containing snapshot references and the
+    ///   filesnap content store.
     pub fn new(snapshot_base_dir: PathBuf) -> Self {
         Self {
             snapshots_directory: snapshot_base_dir,
@@ -24,6 +28,9 @@ impl SnapshotService {
 
 impl SnapshotService {
     /// Capture a file in filesnap's content-addressed store.
+    ///
+    /// # Arguments
+    /// * `path` - Local file whose contents or absence should be captured.
     ///
     /// # Errors
     /// Returns an error if the file cannot be captured or its reference cannot
@@ -85,6 +92,9 @@ impl SnapshotService {
 
     /// Restore the newest per-file checkpoint, consuming it only on success.
     /// Legacy raw `.snap` files remain readable during migration.
+    ///
+    /// # Arguments
+    /// * `path` - Local file whose newest checkpoint should be restored.
     ///
     /// # Errors
     /// Returns an error if no checkpoint exists, restoration fails, or its
