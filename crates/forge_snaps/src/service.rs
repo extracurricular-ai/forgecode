@@ -47,8 +47,9 @@ impl SnapshotService {
                 !source.starts_with(base.canonicalize()?),
                 "Cannot snapshot the snapshot store"
             );
-            // Forge's contract is one explicitly requested file. This stable host
-            // partition deliberately does not scan the containing directory.
+            // Forge's contract is one explicitly requested file. This stable
+            // host partition deliberately does not scan the
+            // containing directory.
             Self::cleanup_retired(&base, &captured.path_hash());
             let store = filesnap::WorkspaceStore::open(&base, &base)?;
             let checkpoint =
@@ -174,8 +175,9 @@ impl SnapshotService {
             .extension()
             .is_some_and(|extension| extension == "filesnap")
         {
-            // Retire the host marker before deleting its engine session. A crash or
-            // failed cleanup leaves a retryable marker, never a usable broken undo.
+            // Retire the host marker before deleting its engine session. A
+            // crash or failed cleanup leaves a retryable marker,
+            // never a usable broken undo.
             let retired = snapshot_path.with_extension("filesnap-retired");
             tokio::fs::rename(&snapshot_path, retired).await?;
             let base = self.snapshots_directory.clone();

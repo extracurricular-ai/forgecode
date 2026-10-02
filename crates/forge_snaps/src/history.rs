@@ -147,7 +147,8 @@ impl ConversationHistory {
         lock.try_lock()
             .context("Another Forge turn or rewind is using this workspace")?;
         let active = dir.join("active.json");
-        // Once the lock is acquired any previous marker belongs to an interrupted run.
+        // Once the lock is acquired any previous marker belongs to an
+        // interrupted run.
         match fs::remove_file(&active) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
